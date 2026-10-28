@@ -5090,6 +5090,42 @@ const screensaverFollowAnimationScale = SettingDef<bool>(
   category: 'Screensaver',
 );
 
+/// Off keeps the hard cut both ways. On, the screensaver fades in over the
+/// fade-in duration and out in a fixed 250 ms, so a wake still feels
+/// instant.
+const screensaverFade = SettingDef<bool>(
+  key: 'screensaver.fade',
+  type: SettingType.boolean,
+  defaultValue: false,
+  title: 'Fade screensaver',
+  description: 'Fade the screensaver in over the dashboard and out on wake.',
+  category: 'Screensaver',
+);
+
+const screensaverFadeSeconds = SettingDef<num>(
+  key: 'screensaver.fade_seconds',
+  type: SettingType.number,
+  defaultValue: 1,
+  title: 'Fade-in duration (seconds)',
+  description: 'How long the screensaver takes to fade in.',
+  category: 'Screensaver',
+  dependsOn: 'screensaver.fade',
+  min: 0.2,
+  max: 3,
+  step: 0.1,
+  unit: ' s',
+);
+
+/// The fade-in in effect: zero while Fade screensaver is off.
+Duration screensaverFadeIn(bool fade, num seconds) => fade
+    ? Duration(milliseconds: (seconds * 1000).round())
+    : Duration.zero;
+
+/// Views that fade: the ones that draw something over the dashboard.
+/// 'blank' is a dark panel and 'dashboard' a clear layer.
+bool screensaverViewFades(String? view) =>
+    view != null && view != 'blank' && view != 'dashboard';
+
 // ── Camera Streams (mode: camera) ──
 // The views the screensaver cycles through, as a JSON array of view ids in
 // rotation order. Picked from the views configured under Camera Streams in
@@ -13146,6 +13182,8 @@ const List<SettingDef<Object>> allSettings = [
   screensaverPixelShift,
   screensaverMenu,
   screensaverFollowAnimationScale,
+  screensaverFade,
+  screensaverFadeSeconds,
   // The legacy small clock rows, hidden since the Widgets group took over;
   // registered so old backups still import (then migrate on startup).
   screensaverMiniClock,

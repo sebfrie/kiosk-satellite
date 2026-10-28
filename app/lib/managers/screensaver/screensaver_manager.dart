@@ -209,6 +209,11 @@ class ScreensaverManager extends Manager with WidgetsBindingObserver {
   /// goes dark by other hands.
   Timer? _screenOffTimer;
 
+  /// When the overlay's fade-in ends. Brightness waits for it: a backlight
+  /// that drops mid-fade (Black goes to 0) would hide the fade.
+  DateTime? _fadeInEnds;
+  Timer? _brightnessHold;
+
   /// One real minute, injectable for tests only.
   final Duration _screenOffUnit;
 
@@ -1914,7 +1919,7 @@ class ScreensaverManager extends Manager with WidgetsBindingObserver {
     if (!_active || _blanked || _savedBrightness == null) return;
     if (!_settings.get(defs.screensaverNotificationBrightness)) return;
     if (showing) {
-      await commands.execute('setBrightness', {
+      await _brightness({
         'level': _savedBrightness,
         'ceiling': true,
       });
@@ -1929,9 +1934,31 @@ class ScreensaverManager extends Manager with WidgetsBindingObserver {
   /// coverage can flip mid-session (a schedule boundary swapping Dim for a
   /// content mode, music starting under Dim).
   void _setView(String? view) {
+    if (activeView.value == null && defs.screensaverViewFades(view)) {
+      _fadeInEnds = DateTime.now().add(
+        defs.screensaverFadeIn(
+          _settings.get(defs.screensaverFade),
+          _settings.get(defs.screensaverFadeSeconds),
+        ),
+      );
+    }
     activeView.value = view;
     bus.publish(ScreensaverViewChanged(view: view));
     _syncNowPlayingShown();
+  }
+
+  /// The session's brightness, held while the fade-in runs. The last level
+  /// asked for wins, so a notification lifting it mid-fade is not undone.
+  Future<void> _brightness(Map<String, Object?> args) async {
+    final wait = _fadeInEnds?.difference(DateTime.now()) ?? Duration.zero;
+    if (wait <= Duration.zero) {
+      await commands.execute('setBrightness', args);
+      return;
+    }
+    _brightnessHold?.cancel();
+    _brightnessHold = Timer(wait, () {
+      if (_active) unawaited(commands.execute('setBrightness', args));
+    });
   }
 
   /// Whether the Now Playing view is on screen, as the screensaver overlay
@@ -1980,7 +2007,7 @@ class ScreensaverManager extends Manager with WidgetsBindingObserver {
       await _ensureSavedBrightness();
       if (!_active || !_blanked) return;
       _setView('blank');
-      await commands.execute('setBrightness', {
+      await _brightness({
         'level': lift ? _savedBrightness : 0,
         'ceiling': true,
       });
@@ -2007,7 +2034,7 @@ class ScreensaverManager extends Manager with WidgetsBindingObserver {
       // and 'dashboard' show the page itself), at full brightness.
       _setView((mode == 'dim' || mode == 'dashboard') ? 'black' : mode);
       if (_savedBrightness != null) {
-        await commands.execute('setBrightness', {
+        await _brightness({
           'level': _savedBrightness,
           'ceiling': true,
         });
@@ -2030,13 +2057,13 @@ class ScreensaverManager extends Manager with WidgetsBindingObserver {
         final dim =
             _scheduleBrightness ??
             _settings.get(defs.screensaverDimLevel).toDouble();
-        await commands.execute('setBrightness', {
+        await _brightness({
           'level': liftForNotification ? _savedBrightness : dim,
           'ceiling': true,
         });
       case 'black' when liftForNotification:
         _setView('black');
-        await commands.execute('setBrightness', {
+        await _brightness({
           'level': _savedBrightness,
           'ceiling': true,
         });
@@ -2047,7 +2074,7 @@ class ScreensaverManager extends Manager with WidgetsBindingObserver {
         // must stay alive: motion wake, the wake word UI and the admin's
         // live view all keep running behind the dark glass.
         _setView('black');
-        await commands.execute('setBrightness', {'level': 0, 'ceiling': true});
+        await _brightness({'level': 0, 'ceiling': true});
       default:
         // clock / media / website: a lit overlay showing content, at normal
         // brightness unless the separate screensaver brightness — or the
@@ -2060,14 +2087,14 @@ class ScreensaverManager extends Manager with WidgetsBindingObserver {
           final level =
               _scheduleBrightness ??
               _settings.get(defs.screensaverBrightnessLevel).toDouble();
-          await commands.execute('setBrightness', {
+          await _brightness({
             'level': liftForNotification ? _savedBrightness : level,
             'ceiling': true,
           });
         } else if (_savedBrightness != null) {
           // A mid-session switch out of a dimmed mode (schedule boundary,
           // music starting) must lift the old mode's darkness with it.
-          await commands.execute('setBrightness', {
+          await _brightness({
             'level': _savedBrightness,
             'ceiling': true,
           });
@@ -2096,14 +2123,14 @@ class ScreensaverManager extends Manager with WidgetsBindingObserver {
     if (_contentDimEnabled(mode)) {
       await _ensureSavedBrightness();
       // An active schedule entry's brightness still wins over the slider.
-      await commands.execute('setBrightness', {
+      await _brightness({
         'level':
             _scheduleBrightness ??
             _settings.get(defs.screensaverBrightnessLevel).toDouble(),
         'ceiling': true,
       });
     } else if (_savedBrightness != null) {
-      await commands.execute('setBrightness', {
+      await _brightness({
         'level': _savedBrightness,
         'ceiling': true,
       });
@@ -2129,6 +2156,8 @@ class ScreensaverManager extends Manager with WidgetsBindingObserver {
     _tapChainStart = null;
     _screenOffTimer?.cancel();
     _screenOffTimer = null;
+    _brightnessHold?.cancel();
+    _fadeInEnds = null;
     _armedScreenOffMinutes = null;
     _panelDark = false;
     _blanked = false;

@@ -1116,8 +1116,15 @@ class BrowserManager extends Manager with WidgetsBindingObserver {
     _freezeDelay?.cancel();
     final want = _wantFrozen;
     if (want && !_frozen) {
+      // Never hide the page while the screensaver still fades in over it.
+      final ms = defs
+          .screensaverFadeIn(
+            _settings.get(defs.screensaverFade),
+            _settings.get(defs.screensaverFadeSeconds),
+          )
+          .inMilliseconds;
       _freezeDelay = Timer(
-        const Duration(seconds: 1),
+        Duration(milliseconds: ms + 100 > 1000 ? ms + 100 : 1000),
         () => unawaited(_syncFreeze()),
       );
     } else {

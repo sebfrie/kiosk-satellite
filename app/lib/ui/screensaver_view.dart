@@ -84,8 +84,54 @@ class ScreensaverOverlay extends StatefulWidget {
   State<ScreensaverOverlay> createState() => _ScreensaverOverlayState();
 }
 
-class _ScreensaverOverlayState extends State<ScreensaverOverlay> {
+class _ScreensaverOverlayState extends State<ScreensaverOverlay>
+    with SingleTickerProviderStateMixin {
   StreamSubscription<SettingChanged>? _widgetsSub;
+
+  /// The view on screen. It outlives activeView by the fade-out, so the
+  /// mode stays drawn while it fades away over the dashboard.
+  late final _drawn = ValueNotifier<String?>(
+    container.screensaver.activeView.value,
+  );
+  late final _fade = AnimationController(
+    vsync: this,
+    value: 1,
+    reverseDuration: const Duration(milliseconds: 250),
+  )..addStatusListener((status) {
+      if (status == AnimationStatus.dismissed &&
+          container.screensaver.activeView.value == null) {
+        _drawn.value = null;
+      }
+    });
+
+  /// Start: fade in. Stop: fade out, then drop the view. A mode switch
+  /// mid-session and the dark panel keep the cut. Opacity 1 paints with no
+  /// layer, so outside a fade this costs nothing.
+  void _viewChanged() {
+    final next = container.screensaver.activeView.value;
+    final fadeIn = defs.screensaverFadeIn(
+      container.settings.get(defs.screensaverFade),
+      container.settings.get(defs.screensaverFadeSeconds),
+    );
+    final on = fadeIn > Duration.zero;
+    final fadingOut = _fade.status == AnimationStatus.reverse;
+    if (on &&
+        defs.screensaverViewFades(next) &&
+        (_drawn.value == null || fadingOut)) {
+      _fade.duration = fadeIn;
+      // A start during the fade-out turns it around from where it is.
+      _fade.forward(from: fadingOut ? null : 0);
+    } else if (on &&
+        next == null &&
+        defs.screensaverViewFades(_drawn.value)) {
+      _fade.reverse();
+      setState(() {}); // let taps through while it fades
+      return;
+    } else {
+      _fade.value = 1;
+    }
+    _drawn.value = next;
+  }
 
   /// Whether the Clock screensaver's Night mode holds (issue #391). Decided
   /// here rather than in the clock face because the corner widgets, which
@@ -100,6 +146,7 @@ class _ScreensaverOverlayState extends State<ScreensaverOverlay> {
   @override
   void initState() {
     super.initState();
+    container.screensaver.activeView.addListener(_viewChanged);
     container.screensaver.scheduleNowPlaying.addListener(_scheduleChanged);
     // Editing the Widgets group while the screensaver shows (the remote
     // admin can) applies immediately: the widget list is read at build,
@@ -172,6 +219,9 @@ class _ScreensaverOverlayState extends State<ScreensaverOverlay> {
 
   @override
   void dispose() {
+    container.screensaver.activeView.removeListener(_viewChanged);
+    _fade.dispose();
+    _drawn.dispose();
     container.screensaver.scheduleNowPlaying.removeListener(_scheduleChanged);
     _widgetsSub?.cancel();
     _luxSub?.cancel();
@@ -210,7 +260,7 @@ class _ScreensaverOverlayState extends State<ScreensaverOverlay> {
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<String?>(
-      valueListenable: container.screensaver.activeView,
+      valueListenable: _drawn,
       builder: (context, view, _) {
         if (view == null || view == 'blank') return const SizedBox.shrink();
         // A Black screensaver asked to look off (issue #151): one switch
@@ -230,24 +280,31 @@ class _ScreensaverOverlayState extends State<ScreensaverOverlay> {
                 container.settings.get(defs.sendspinFullscreen) &&
                 scheduled != false;
             return Positioned.fill(
-              child: _ScreensaverPlayerLayout(
-                container: container,
-                split:
-                    scheduled ??
-                    container.settings.get(defs.sendspinFullscreenSplit),
-                photoFill: container.settings.get(
-                  defs.sendspinFullscreenPhotoFill,
+              // Taps during the fade-out already reach the dashboard.
+              child: IgnorePointer(
+                ignoring: container.screensaver.activeView.value == null,
+                child: FadeTransition(
+                  opacity: _fade,
+                  child: _ScreensaverPlayerLayout(
+                    container: container,
+                    split:
+                        scheduled ??
+                        container.settings.get(defs.sendspinFullscreenSplit),
+                    photoFill: container.settings.get(
+                      defs.sendspinFullscreenPhotoFill,
+                    ),
+                    screensaver: child!,
+                    player: playing
+                        ? (shared) => _Dismissable(
+                            container: container,
+                            child: SendspinFullscreenView(
+                              container: container,
+                              alongsideScreensaver: shared,
+                            ),
+                          )
+                        : null,
+                  ),
                 ),
-                screensaver: child!,
-                player: playing
-                    ? (shared) => _Dismissable(
-                        container: container,
-                        child: SendspinFullscreenView(
-                          container: container,
-                          alongsideScreensaver: shared,
-                        ),
-                      )
-                    : null,
               ),
             );
           },
